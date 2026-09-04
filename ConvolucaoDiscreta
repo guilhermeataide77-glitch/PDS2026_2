@@ -1,6 +1,11 @@
+import time
 import numpy as np
 import matplotlib.pyplot as plt
+from numba import njit
+import cupy as cp  # Certifique-se de ter instalado o CuPy com suporte à sua GPU
 
+
+#Algoritmo Manual em Python Puro (O(N*M))
 def convolucao_manual(x, h):
     N = len(x)
     M = len(h)
@@ -9,66 +14,111 @@ def convolucao_manual(x, h):
     h_invertido = h[::-1]
     
     for n in range(len_y):
-        soma = 0
+        soma = 0.0
         for k in range(M):
             idx_x = n - (M - 1) + k
+            0 <= idx_x < N
             if 0 <= idx_x < N:
                 soma += x[idx_x] * h_invertido[k]
         y[n] = soma
-        
     return y
 
-# DEFINIÇÃO DOS SINAIS 
-x = np.array([1, 2, 3, 4, 5])
-h = np.array([1, 0, -1])
+# Algoritmo com Numba - Compilação JIT (CPU rápida)
+@njit
+def convolucao_numba(x, h):
+    N = len(x)
+    M = len(h)
+    len_y = N + M - 1
+    y = np.zeros(len_y, dtype=np.float64)
+    
+    for n in range(len_y):
+        soma = 0.0
+        for k in range(M):
+            idx_x = n - (M - 1) + k
+            if 0 <= idx_x < N:
+                soma += x[idx_x] * h[M - 1 - k]
+        y[n] = soma
+    return y
 
-# Calculo das convolucoes
-y_manual = convolucao_manual(x, h)
-y_numpy = np.convolve(x, h)
+# Algoritmo com CuPy (Aceleração em GPU via CUDA)
+def convolucao_cupy(x, h):
+    
+    x_gpu = cp.asarray(x)
+    h_gpu = cp.asarray(h)
+    
+    y_gpu = cp.convolve(x_gpu, h_gpu)
+    
+    cp.cuda.Stream.null.synchronize()
+    
+    return cp.asnumpy(y_gpu)
 
-#  DEFINIÇÃO DOS INDICES N 
-n_x = np.arange(len(x))
-n_h = np.arange(len(h))
-n_y = np.arange(len(y_manual))
 
-# PLOTAGEM DOS GRAFICOS
-plt.figure(figsize=(10, 8))
 
-# 1. Sinal de Entrada x[n]
-plt.subplot(3, 1, 1)
-plt.stem(n_x, x, basefmt=" ")
-plt.title("Sinal de Entrada x[n]")
-plt.xlabel("n")
-plt.ylabel("Amplitude")
-plt.grid(True)
+_ = convolucao_numba(np.array([1.0, 2.0]), np.array([1.0, 0.0]))
 
-# 2. Resposta ao Impulso h[n]
-plt.subplot(3, 1, 2)
-plt.stem(n_h, h, basefmt=" ")
-plt.title("Resposta ao Impulso h[n]")
-plt.xlabel("n")
-plt.ylabel("Amplitude")
-plt.grid(True)
 
-# 3. Resultado da Convolução y[n]
-plt.subplot(3, 1, 3)
-plt.stem(n_y, y_manual, label='Manual', basefmt=" ")
-plt.stem(n_y, y_numpy, linefmt='r--', markerfmt='ro', label='np.convolve')
-plt.title("Resultado da Convolução y[n] = x[n] * h[n]")
-plt.xlabel("n")
-plt.ylabel("Amplitude")
+tamanhos_N = [100, 500, 1000, 2000, 5000, 10000]
+
+ 
+tempos_manual = []
+tempos_numpy = []
+tempos_numba = []
+tempos_cupy = []
+
+for N in tamanhos_N:
+    M = N // 10  
+    x = np.random.randn(N)
+    h = np.random.randn(M)
+    
+    # Teste 1: Python Manual (Limitado a N menores para evitar execuções longas)
+    if N <= 2000:
+        t0 = time.perf_counter()
+        _ = convolucao_manual(x, h)
+        tempos_manual.append(time.perf_counter() - t0)
+    else:
+        tempos_manual.append(None)
+        
+    # Teste 2: NumPy (NumPy executa O(N*M) via C interno)
+    t0 = time.perf_counter()
+    _ = np.convolve(x, h)
+    tempos_numpy.append(time.perf_counter() - t0)
+    
+    # Teste 3: Numba JIT (CPU compilada C-like)
+    t0 = time.perf_counter()
+    _ = convolucao_numba(x, h)
+    tempos_numba.append(time.perf_counter() - t0)
+    
+    # Teste 4: CuPy (GPU)
+    t0 = time.perf_counter()
+    _ = convolucao_cupy(x, h)
+    tempos_cupy.append(time.perf_counter() - t0)
+
+
+
+plt.figure(figsize=(10, 6))
+
+plt.plot([N for N, t in zip(tamanhos_N, tempos_manual) if t], 
+         [t for t in tempos_manual if t], 'o--', label='Manual (Python puro - $O(N \cdot M)$)')
+
+plt.plot(tamanhos_N, tempos_numpy, 's-', label='NumPy (`np.convolve` - C)')
+plt.plot(tamanhos_N, tempos_numba, '^--', label='Numba JIT (CPU Acelerada)')
+plt.plot(tamanhos_N, tempos_cupy, 'd-', label='CuPy (GPU CUDA)')
+
+plt.yscale('log')  
+plt.xscale('log')
+plt.title("Análise de Desempenho e Complexidade das Convoluções")
+plt.xlabel("Tamanho do Sinal N (com M = 0.1 * N)")
+plt.ylabel("Tempo de Execução (segundos) - Escala Log")
+plt.grid(True, which="both", ls="--")
 plt.legend()
-plt.grid(True)
 
 plt.tight_layout()
 plt.show()
 
-print("")
 
-# IMPRESSÃO DOS VALORES E TESTE
-print("Resultado da convolução manual:    ", y_manual)
-print("")
-print("Resultado NumPy:     ", y_numpy)
-print("")
-if np.array_equal(y_manual, y_numpy):
-    print("Os resultados são EXATAMENTE IGUAIS")
+print(f"{'N':<8}{'M':<8}{'Manual (s)':<15}{'NumPy (s)':<15}{'Numba (s)':<15}{'CuPy (s)':<15}")
+print("-" * 76)
+for i, N in enumerate(tamanhos_N):
+    M = N // 10
+    t_m = f"{tempos_manual[i]:.5f}" if tempos_manual[i] else "N/A"
+    print(f"{N:<8}{M:<8}{t_m:<15}{tempos_numpy[i]:.5f}{'':<6}{tempos_numba[i]:.5f}{'':<6}{tempos_cupy[i]:.5f}")
